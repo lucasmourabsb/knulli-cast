@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from prepare_native import prepare
 
 
 def main():
@@ -16,6 +17,7 @@ def main():
             raise SystemExit('Ferramenta necessária no PATH: '+tool)
     if not (os.environ.get('ZIG') or shutil.which('zig')):
         raise SystemExit('Configure ZIG ou adicione o Zig ao PATH.')
+    native = prepare()
     tools = root/'tools'
     # A download through a web interface can lose executable mode bits.
     for wrapper in tools.glob('*.py'):
@@ -31,8 +33,8 @@ def main():
         'PKG_CONFIG_ALLOW_CROSS': '1',
     })
     subprocess.run(['cargo','build','--locked','--release','-p','rgsp-host',
-                    '--target','aarch64-unknown-linux-gnu'],cwd=root/'native',env=env,check=True)
-    binary = root/'native/target/aarch64-unknown-linux-gnu/release/rgsp-host'
+                    '--target','aarch64-unknown-linux-gnu'],cwd=native,env=env,check=True)
+    binary = native/'target/aarch64-unknown-linux-gnu/release/rgsp-host'
     destination = root/'handheld/moonlight-host'
     shutil.copy2(binary,destination)
     destination.chmod(0o755)
