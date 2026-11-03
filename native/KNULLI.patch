@@ -1,0 +1,644 @@
+diff --git a/rgsp-cedar/src/bitstream.rs b/rgsp-cedar/src/bitstream.rs
+index 2748298..2f59277 100644
+--- a/rgsp-cedar/src/bitstream.rs
++++ b/rgsp-cedar/src/bitstream.rs
+@@ -36,6 +36,9 @@ pub fn append_avcc_as_annexb(out: &mut Vec<u8>, d: &[u8]) -> usize {
+         written += 4 + len;
+         off += 4 + len;
+     }
++    if off != d.len() {
++        return 0;
++    }
+     for (start, len) in nals {
+         out.extend_from_slice(&START);
+         out.extend_from_slice(&d[start..start + len]);
+@@ -43,6 +46,19 @@ pub fn append_avcc_as_annexb(out: &mut Vec<u8>, d: &[u8]) -> usize {
+     written
+ }
+ 
++/// A NAL or its length prefix may cross the encoder's circular buffer boundary.
++/// Reassemble the frame before interpreting any length prefixes.
++pub fn append_ring_as_annexb(out: &mut Vec<u8>, first: &[u8], second: &[u8]) {
++    if second.is_empty() {
++        if append_avcc_as_annexb(out, first) == 0 {out.extend_from_slice(first);}
++        return;
++    }
++    let mut frame = Vec::with_capacity(first.len()+second.len());
++    frame.extend_from_slice(first);
++    frame.extend_from_slice(second);
++    if append_avcc_as_annexb(out, &frame) == 0 {out.extend_from_slice(&frame);}
++}
++
+ /// An IDR frame is one whose first slice NAL has type 5. Parameter sets (7, 8),
+ /// SEI (6) and access-unit delimiters (9) are skipped.
+ pub fn first_slice_is_idr(d: &[u8]) -> bool {
+@@ -149,6 +165,24 @@ pub fn avcc_record_to_annexb(p: &[u8]) -> Vec<u8> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn length_prefixes_and_nals_can_cross_every_ring_boundary() {
++        let avcc = [0,0,0,3,0x41,0xaa,0xbb,0,0,0,2,0x06,0xcc];
++        let expected = [0,0,0,1,0x41,0xaa,0xbb,0,0,0,1,0x06,0xcc];
++        for split in 0..=avcc.len() {
++            let mut actual=Vec::new();
++            append_ring_as_annexb(&mut actual,&avcc[..split],&avcc[split..]);
++            assert_eq!(actual,expected,"ring split at {split}");
++        }
++    }
++
++    #[test]
++    fn a_truncated_length_prefix_does_not_silently_discard_bytes() {
++        let mut actual=Vec::new();
++        assert_eq!(append_avcc_as_annexb(&mut actual,&[0,0,0,2,0x41,0xaa,0,0]),0);
++        assert!(actual.is_empty());
++    }
++
+     #[test]
+     fn passes_through_data_that_is_already_annexb() {
+         let d = [0, 0, 0, 1, 0x65, 0xaa, 0xbb];
+diff --git a/rgsp-cedar/src/capture.rs b/rgsp-cedar/src/capture.rs
+index 0b14222..19e3d3a 100644
+--- a/rgsp-cedar/src/capture.rs
++++ b/rgsp-cedar/src/capture.rs
+@@ -420,6 +420,11 @@ impl Capture {
+             }
+         }
+ 
++        if let Some(set) = self.libs.video_enc_set_parameter {
++            let mut fps = self.fps;
++            let rc = unsafe { set(self.enc, index::FRAMERATE, &mut fps as *mut i32 as *mut c_void) };
++            if rc != 0 {warn!("could not set frame rate (rc={rc})");}
++        }
+         let mut bcfg = VencBaseConfig::default();
+         // Ask the encoder for NALU output, which emits SPS/PPS in-band ahead of
+         // the IDR. Without it the parameter sets live in VE SRAM that the CPU
+@@ -694,36 +699,35 @@ impl Capture {
+             }
+ 
+             let o = &g.ob;
+-            // The vendor exposes the frame as up to two segments of a ring
+-            // buffer (pData0/nSize0 + pData1/nSize1), with nTotalSize the sum.
+-            // Only trust the split when it adds up; otherwise treat pData0 as
+-            // one contiguous run of nTotalSize bytes, which is what
+-            // cedar-probe does and what this build appears to produce.
+-            if !o.p_data0.is_null() && o.n_size0 != 0 && o.n_size0 + o.n_size1 == o.n_total_size {
+-                // SAFETY: the vendor reports nSize0 valid bytes at pData0.
+-                let s0 = unsafe { std::slice::from_raw_parts(o.p_data0, o.n_size0 as usize) };
+-                bitstream::append_avcc_as_annexb(&mut self.out, s0);
+-                if !o.p_data1.is_null() && o.n_size1 != 0 {
+-                    // SAFETY: as above, for the second ring segment.
+-                    let s1 = unsafe { std::slice::from_raw_parts(o.p_data1, o.n_size1 as usize) };
+-                    bitstream::append_avcc_as_annexb(&mut self.out, s1);
+-                }
+-            } else if !o.p_data0.is_null() && o.n_total_size != 0 {
+-                // SAFETY: the vendor reports nTotalSize valid bytes at pData0.
+-                let s = unsafe { std::slice::from_raw_parts(o.p_data0, o.n_total_size as usize) };
+-                if bitstream::append_avcc_as_annexb(&mut self.out, s) == 0 {
+-                    // not AVCC — emit verbatim
+-                    self.out.extend_from_slice(s);
+-                }
++            // CedarC stores two extents, not a total-size field. The second
++            // extent becomes nonempty when its circular output buffer wraps.
++            let total = o.n_size0 as usize + o.n_size1 as usize;
++            if total == 0 || total > 4 * 1024 * 1024
++                || (o.n_size0 != 0 && o.p_data0.is_null())
++                || (o.n_size1 != 0 && o.p_data1.is_null()) {
++                unsafe { (self.libs.free_one_bitstream_frame)(self.enc, &mut g.ob) };
++                return Err(self.fail(anyhow!("invalid encoder output buffer")));
++            }
++            // SAFETY: each nonempty extent has a valid vendor-owned pointer
++            // until FreeOneBitStreamFrame below, and sizes are bounded above.
++            let s0 = if o.n_size0 == 0 { &[] } else {
++                unsafe { std::slice::from_raw_parts(o.p_data0, o.n_size0 as usize) }
++            };
++            let s1 = if o.n_size1 == 0 { &[] } else {
++                unsafe { std::slice::from_raw_parts(o.p_data1, o.n_size1 as usize) }
++            };
++            bitstream::append_ring_as_annexb(&mut self.out, s0, s1);
++            if o.n_size1 != 0 {
++                info!("joined bitstream ring wrap at frame {} ({} + {} bytes)", self.frames, o.n_size0, o.n_size1);
+             }
+ 
+             debug!(
+                 "frame {}: total={} size0={} size1={}{}",
+                 self.frames,
+-                o.n_total_size,
++                total,
+                 o.n_size0,
+                 o.n_size1,
+-                if o.b_is_key_frame != 0 { " (key)" } else { "" }
++                if o.n_flag & 1 != 0 { " (key)" } else { "" }
+             );
+             // SAFETY: hands the same buffer back to the vendor exactly once.
+             unsafe { (self.libs.free_one_bitstream_frame)(self.enc, &mut g.ob) };
+@@ -967,6 +971,17 @@ mod tests {
+     use super::*;
+     use std::mem::{offset_of, size_of};
+ 
++    #[test]
++    #[cfg(target_pointer_width = "64")]
++    fn output_extents_match_the_cedarc_64bit_abi() {
++        assert_eq!(offset_of!(VencOutputBuffer, n_pts), 8);
++        assert_eq!(offset_of!(VencOutputBuffer, n_flag), 16);
++        assert_eq!(offset_of!(VencOutputBuffer, n_size0), 20);
++        assert_eq!(offset_of!(VencOutputBuffer, n_size1), 24);
++        assert_eq!(offset_of!(VencOutputBuffer, p_data0), 32);
++        assert_eq!(offset_of!(VencOutputBuffer, p_data1), 40);
++    }
++
+     /// The single highest-risk property in this port, checked off-device.
+     ///
+     /// `inbuf` and `used` must be adjacent, in that order, last, with only
+diff --git a/rgsp-cedar/src/vendor_abi.rs b/rgsp-cedar/src/vendor_abi.rs
+index 715226f..c179802 100644
+--- a/rgsp-cedar/src/vendor_abi.rs
++++ b/rgsp-cedar/src/vendor_abi.rs
+@@ -19,6 +19,7 @@ use std::ffi::{c_char, c_int, c_uint, c_void};
+ pub mod index {
+     use std::ffi::c_int;
+     pub const BITRATE: c_int = 0x0;
++    pub const FRAMERATE: c_int = 0x1;
+     pub const MAX_KEY_INTERVAL: c_int = 0x2;
+     pub const FORCE_KEY_FRAME: c_int = 0x6;
+     pub const H264_SPS_PPS: c_int = 0x101;
+@@ -144,17 +145,13 @@ impl Default for VencInputBuffer {
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub struct VencOutputBuffer {
+-    pub _flags: i32,
+-    pub _pad0: [i32; 3],
+-    pub b_is_key_frame: i32,
+-    pub n_total_size: u32,
+     pub n_id: i32,
+-    pub _align: i32,
+-    pub p_data0: *mut u8,
+-    pub p_data1: *mut u8,
++    pub n_pts: i64,
++    pub n_flag: u32,
+     pub n_size0: u32,
+     pub n_size1: u32,
+-    pub n_pts: i64,
++    pub p_data0: *mut u8,
++    pub p_data1: *mut u8,
+     pub _tail: [u8; 256],
+ }
+ 
+diff --git a/rgsp-host/Cargo.toml b/rgsp-host/Cargo.toml
+index fc45517..efde869 100644
+--- a/rgsp-host/Cargo.toml
++++ b/rgsp-host/Cargo.toml
+@@ -19,7 +19,7 @@ tracing = "0.1"
+ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ libc = "0.2"
+ anyhow = "1"
+-alsa = "0.9"
++alsa = { version = "0.9", optional = true }
+ async-shutdown = "0.2.2"
+ toml = "1"
+ jsonrpsee = { version = "0.26.0", default-features = false, features = ["server", "macros"] }
+@@ -27,5 +27,8 @@ reth-ipc = { path = "../vendor/reth-ipc" }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ 
++[features]
++legacy-alsa-tests = ["dep:alsa"]
++
+ [dev-dependencies]
+ jsonrpsee = { version = "0.26.0", default-features = false, features = ["server", "macros", "async-client"] }
+diff --git a/rgsp-host/src/audio.rs b/rgsp-host/src/audio.rs
+index 1ac266b..250f132 100644
+--- a/rgsp-host/src/audio.rs
++++ b/rgsp-host/src/audio.rs
+@@ -1,186 +1,63 @@
+-//! ALSA loopback capture for streaming game audio.
+-//!
+-//! # Known Gap: Loopback Data Path
+-//!
+-//! The loopback DATA path has no automated regression test.
+-//!
+-//! An in-process playback test was attempted and abandoned: `writei()` reports
+-//! frames written and the playback stream reports no error, but the capture side
+-//! reads all zeros (19200 samples, max magnitude 0). Tried explicit
+-//! prepare/start orderings, prepare→fill→start, start_threshold via sw_params,
+-//! several cables and subdevices, varied tone length and amplitude, and
+-//! accumulating across reads.
+-//!
+-//! The hardware path is known good: feeding /dev/urandom through `aplay` into
+-//! hw:Loopback,0,0 while capturing from hw:Loopback,1,0 yields 96255 non-zero
+-//! samples across 48128 frames. So this is a defect in how the alsa crate's
+-//! playback side is driven here, not a broken cable.
+-//!
+-//! What IS guarded automatically: parameter negotiation, via the test
+-//! `both_cable_ends_can_open_with_matching_params`, which exercises snd-aloop's
+-//! loopback_check_format—the failure mode that produces a silent -EIO when
+-//! capture and playback disagree on format, rate, or channels.
+-
+-use alsa::pcm::{Access, Format, HwParams, PCM};
+-use alsa::{Direction, ValueOr};
++//! KNULLI PipeWire/Pulse monitor capture. No ALSA routing or kernel module.
++use std::io::Read;
++use std::process::{Child, ChildStdout, Command, Stdio};
+ use anyhow::{Context, Result};
+-use tracing::warn;
+ 
+-/// Fixed by what minarch plays. snd-aloop fails the capture side with -EIO
+-/// if the two ends of the cable disagree on format, rate or channels
+-/// (aloop.c, loopback_check_format).
+ pub const SAMPLE_RATE: u32 = 48_000;
+ pub const CHANNELS: u32 = 2;
+-/// 5 ms at 48 kHz - small enough that audio latency stays under the video's.
+ pub const PERIOD_FRAMES: usize = 240;
++const _: () = assert!(PERIOD_FRAMES == moonshine_core::session::stream::audio::FRAME_FRAMES);
+ 
+-/// One capture period must be exactly one Opus frame. Moonshine's PCM bridge
+-/// drops any chunk whose length differs (`host_source::chunk_len_is_valid`),
+-/// and it drops it at warn level rather than failing — a mismatch would show
+-/// up as silent or jittery audio at the client, never as an error. Checked at
+-/// compile time so it cannot drift.
+-const _: () = assert!(
+-    PERIOD_FRAMES == moonshine_core::session::stream::audio::FRAME_FRAMES,
+-    "capture period must equal Moonshine's Opus frame size"
+-);
+-
++// Keep the upstream name so the host pump API remains compatible.
+ pub struct LoopbackCapture {
+-    pcm: PCM,
+-    overrun_count: u32,
++    child: Child,
++    stdout: ChildStdout,
++    bytes: Vec<u8>,
+ }
+ 
+-/// `LoopbackCapture` can be sent to other threads because the ALSA PCM handle
+-/// (`pcm::PCM`) is thread-safe for the single capture stream we create. The
+-/// kernel loopback device is a real hardware endpoint with exclusive access
+-/// serialization. Unlike C state that racily accesses process-global buffers,
+-/// ALSA's Rust binding handles synchronization internally.
+-unsafe impl Send for LoopbackCapture {}
+-
+ impl LoopbackCapture {
+-    pub fn open(device: &str) -> Result<LoopbackCapture> {
+-        let pcm = PCM::new(device, Direction::Capture, false)
+-            .with_context(|| format!("opening {device}"))?;
+-
+-        {
+-            let hwp = HwParams::any(&pcm)?;
+-            hwp.set_access(Access::RWInterleaved)
+-                .context("setting access to RWInterleaved")?;
+-            hwp.set_format(Format::s16())
+-                .context("setting format to S16_LE")?;
+-            hwp.set_channels(CHANNELS)
+-                .context(format!("setting channels to {}", CHANNELS))?;
+-            hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest)
+-                .context(format!("setting rate to {} Hz", SAMPLE_RATE))?;
+-            hwp.set_period_size_near(PERIOD_FRAMES as i64, ValueOr::Nearest)
+-                .context("setting period size")?;
+-            // Four periods is 20 ms of slack at 48 kHz, and this CPU is busy
+-            // capturing and encoding video on the same cores: any scheduling
+-            // hiccup longer than that overruns the capture, which costs a
+-            // prepare()/start() stream reset. Sustained, that is not glitchy
+-            // audio, it is no usable audio at all - the log fills with
+-            // "audio buffer overrun ... recovering" every few tens of ms.
+-            // Deeper buffer, same 5 ms period: reads stay small and prompt,
+-            // but jitter has somewhere to go. This costs nothing in latency
+-            // that matters, because we still consume every period as it
+-            // arrives; it only bounds how far behind we may briefly fall.
+-            hwp.set_buffer_size_near((PERIOD_FRAMES * 16) as i64)
+-                .context("setting buffer size")?;
+-            pcm.hw_params(&hwp)?;
+-        }
+-
+-        // Verify that ALSA granted what we asked for. snd-aloop fails the capture
+-        // side with -EIO when the two ends of the cable disagree on format, rate or
+-        // channels (aloop.c loopback_check_format), so mismatches are fatal.
+-        {
+-            let hwp = pcm.hw_params_current().context("reading current hardware parameters")?;
+-
+-            let actual_rate = hwp.get_rate().context("reading rate from hardware")?;
+-            if actual_rate != SAMPLE_RATE {
+-                return Err(anyhow::anyhow!(
+-                    "rate negotiation failed: requested {}, got {}",
+-                    SAMPLE_RATE,
+-                    actual_rate
+-                ));
+-            }
+-
+-            let actual_channels = hwp.get_channels().context("reading channels from hardware")?;
+-            if actual_channels != CHANNELS {
+-                return Err(anyhow::anyhow!(
+-                    "channel count negotiation failed: requested {}, got {}",
+-                    CHANNELS,
+-                    actual_channels
+-                ));
+-            }
+-
+-            let actual_format = hwp.get_format().context("reading format from hardware")?;
+-            if actual_format != Format::s16() {
+-                return Err(anyhow::anyhow!(
+-                    "format negotiation failed: requested S16_LE, got {:?}",
+-                    actual_format
+-                ));
+-            }
+-
+-            let period_frames = hwp.get_period_size().context("reading period size from hardware")?;
+-            let buffer_frames = hwp.get_buffer_size().context("reading buffer size from hardware")?;
+-            tracing::debug!(
+-                "loopback capture negotiated: rate={} Hz channels={} period={} frames buffer={} frames",
+-                actual_rate,
+-                actual_channels,
+-                period_frames,
+-                buffer_frames
+-            );
++    pub fn open(_device: &str) -> Result<Self> {
++        let monitor = "alsa_output._sys_devices_platform_soc_soc_03000000_codec_mach_sound_card0.stereo-fallback.monitor";
++        let mut command = Command::new("/usr/bin/ffmpeg");
++        command.env("PULSE_RUNTIME_PATH", "/var/run/pulse")
++            .env("PULSE_LATENCY_MSEC", "5")
++            .args(["-hide_banner", "-loglevel", "warning", "-nostdin",
++                "-probesize", "32", "-analyzeduration", "1", "-f", "pulse",
++                "-fragment_size", "960", "-i", monitor,
++                "-vn", "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
++                "-f", "s16le", "-flush_packets", "1", "pipe:1"])
++            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
++        #[cfg(target_os = "linux")]
++        unsafe {
++            use std::os::unix::process::CommandExt;
++            command.pre_exec(|| {
++                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
++                    return Err(std::io::Error::last_os_error());
++                }
++                Ok(())
++            });
+         }
+-
+-        // snd-aloop rejects the implicit start that snd_pcm_readi() would do,
+-        // returning -EIO. Prepare and start explicitly.
+-        pcm.prepare().context("prepare")?;
+-        pcm.start().context("start")?;
+-
+-        Ok(LoopbackCapture {
+-            pcm,
+-            overrun_count: 0,
+-        })
++        let mut child = command.spawn().context("starting KNULLI audio monitor")?;
++        let stdout = child.stdout.take().expect("piped audio stdout");
++        Ok(Self {child, stdout, bytes: Vec::with_capacity(PERIOD_FRAMES * 4)})
+     }
+ 
+-    /// Reads interleaved s16 frames. `buf.len()` must be a multiple of CHANNELS.
+-    /// Returns the number of *frames* read.
+-    pub fn read(&mut self, buf: &mut [i16]) -> Result<usize> {
+-        debug_assert_eq!(
+-            buf.len() % CHANNELS as usize,
+-            0,
+-            "buffer length must be a multiple of CHANNELS"
+-        );
+-
+-        let io = self.pcm.io_i16()?;
+-        loop {
+-            match io.readi(buf) {
+-                Ok(frames) => return Ok(frames),
+-                Err(e) => {
+-                    // An overrun means we fell behind; recover and keep going
+-                    // rather than tearing down the stream.
+-                    if e.errno() == libc::EPIPE {
+-                        self.overrun_count += 1;
+-                        // Log the first few, then every 500th: an overrun
+-                        // storm used to emit thousands of identical lines,
+-                        // which buried the video diagnostics next to them.
+-                        if self.overrun_count <= 3 || self.overrun_count % 500 == 0 {
+-                            warn!(
+-                                "audio buffer overrun #{}: recovering",
+-                                self.overrun_count
+-                            );
+-                        }
+-                        self.pcm.prepare()?;
+-                        self.pcm.start()?;
+-                        continue;
+-                    }
+-                    return Err(e).context("readi");
+-                }
+-            }
++    pub fn read(&mut self, samples: &mut [i16]) -> Result<usize> {
++        anyhow::ensure!(samples.len() % CHANNELS as usize == 0, "unaligned stereo audio period");
++        self.bytes.resize(samples.len() * 2, 0);
++        self.stdout.read_exact(&mut self.bytes).context("reading KNULLI monitor PCM")?;
++        for (sample, bytes) in samples.iter_mut().zip(self.bytes.chunks_exact(2)) {
++            *sample = i16::from_le_bytes([bytes[0], bytes[1]]);
+         }
++        Ok(samples.len() / CHANNELS as usize)
+     }
+ 
+-    /// Returns the number of buffer overruns encountered during capture.
+-    pub fn overrun_count(&self) -> u32 {
+-        self.overrun_count
++    pub fn overrun_count(&self) -> u32 { 0 }
++}
++
++impl Drop for LoopbackCapture {
++    fn drop(&mut self) {
++        let _ = self.child.kill();
++        let _ = self.child.wait();
+     }
+ }
+diff --git a/rgsp-host/src/main.rs b/rgsp-host/src/main.rs
+index 9e25090..6bbd2bb 100644
+--- a/rgsp-host/src/main.rs
++++ b/rgsp-host/src/main.rs
+@@ -1,5 +1,5 @@
+ //! The rgsp-cast daemon: Moonshine's GameStream protocol layer driven by the
+-//! RG SP's Cedar hardware encoder and the kernel ALSA loopback.
++//! RG35XX SP's Cedar hardware encoder and KNULLI's audio monitor.
+ //!
+ //! Ownership split, since it is not obvious from the crate layout:
+ //! - `moonshine-core` (vendored) owns pairing, RTSP, RTP+FEC, encryption,
+@@ -25,7 +25,6 @@ use tokio::sync::mpsc;
+ use rgsp_host::audio::{CHANNELS, LoopbackCapture, PERIOD_FRAMES};
+ use rgsp_host::control::{ControlHandle, PairedEntry, PendingEntry};
+ use rgsp_host::daemon::PidFile;
+-use rgsp_host::routing::CastSink;
+ use rgsp_host::video::{IdrRequester, ResetRequester, VideoConfig, VideoStream};
+ 
+ /// Moonlight's codec bitmask, as probed by the Vulkan healthcheck this project
+@@ -37,13 +36,13 @@ const SUPPORTED_CODECS: u32 = 0x0000_0001;
+ 
+ /// The capture end of the kernel loopback cable. `.asoundrc` (written by
+ /// `CastSink::engage`) points playback at the other end, `hw:Loopback,0,0`.
+-const LOOPBACK_CAPTURE_DEVICE: &str = "hw:Loopback,1,0";
++const LOOPBACK_CAPTURE_DEVICE: &str = "knulli-monitor";
+ 
+ /// NextUI's per-platform userdata directory on the RG SP (h700). Holds the
+ /// `.asoundrc` the routing swaps, and — under `rgsp-cast/` — our config,
+ /// TLS keypair and pairing state, so all of it survives a reboot on the SD
+ /// card rather than living on the rootfs.
+-const DEFAULT_USERDATA: &str = "/mnt/SDCARD/.userdata/h700";
++const DEFAULT_USERDATA: &str = "/userdata/system/knulli-cast";
+ 
+ /// Where the pidfile and the UI's control socket live when `RGSP_RUN_DIR`
+ /// says nothing. Every other piece of the tree — `pak/launch.sh`, the
+@@ -51,7 +50,7 @@ const DEFAULT_USERDATA: &str = "/mnt/SDCARD/.userdata/h700";
+ /// fallback, so the daemon has to as well: a UI that spawns us with a custom
+ /// `RGSP_RUN_DIR` then probes that directory for our socket, and a daemon
+ /// that ignored the variable would bind somewhere the UI never looks.
+-const DEFAULT_RUN_DIR: &str = "/tmp/rgsp";
++const DEFAULT_RUN_DIR: &str = "/tmp/knulli-moonlight";
+ 
+ /// The directory holding the pidfile and the control socket.
+ fn run_dir() -> PathBuf {
+@@ -117,17 +116,7 @@ fn main() -> std::process::ExitCode {
+         }
+     };
+ 
+-    // Step 2: route game audio into the loopback. From here on, EVERY exit
+-    // path must run `release()` — while this is engaged the handheld's
+-    // speaker is silent, and nothing else restores it.
+-    let cast_sink = match CastSink::engage(&userdata) {
+-        Ok(sink) => sink,
+-        Err(e) => {
+-            tracing::error!("failed to route audio to the loopback: {e:#}");
+-            pidfile.release();
+-            return std::process::ExitCode::FAILURE;
+-        }
+-    };
++    // KNULLI already has a monitor source. Do not rewrite its audio routing.
+ 
+     // Loaded before the runtime exists: it sets `XDG_DATA_HOME`, and mutating
+     // the environment with other threads running is the pattern Rust 2024 made
+@@ -136,7 +125,7 @@ fn main() -> std::process::ExitCode {
+         Ok(config) => config,
+         Err(e) => {
+             tracing::error!("{e:#}");
+-            return shutdown(cast_sink, pidfile, std::process::ExitCode::FAILURE);
++            return shutdown(pidfile, std::process::ExitCode::FAILURE);
+         }
+     };
+ 
+@@ -144,7 +133,7 @@ fn main() -> std::process::ExitCode {
+         Ok(rt) => rt,
+         Err(e) => {
+             tracing::error!("failed to start the tokio runtime: {e}");
+-            return shutdown(cast_sink, pidfile, std::process::ExitCode::FAILURE);
++            return shutdown(pidfile, std::process::ExitCode::FAILURE);
+         }
+     };
+ 
+@@ -161,7 +150,7 @@ fn main() -> std::process::ExitCode {
+         Ok(handle) => handle,
+         Err(e) => {
+             tracing::error!("failed to serve the control socket: {e:#}");
+-            return shutdown(cast_sink, pidfile, std::process::ExitCode::FAILURE);
++            return shutdown(pidfile, std::process::ExitCode::FAILURE);
+         }
+     };
+ 
+@@ -190,16 +179,13 @@ fn main() -> std::process::ExitCode {
+             std::process::ExitCode::FAILURE
+         }
+     };
+-    shutdown(cast_sink, pidfile, code)
++    shutdown(pidfile, code)
+ }
+ 
+ /// Restore audio routing and drop the pidfile. Runs on clean shutdown, on
+ /// SIGTERM/SIGINT, and on every startup failure after `CastSink::engage`
+ /// succeeded.
+-fn shutdown(cast_sink: CastSink, pidfile: PidFile, code: std::process::ExitCode) -> std::process::ExitCode {
+-    if let Err(e) = cast_sink.release() {
+-        tracing::error!("failed to restore audio routing: {e:#}");
+-    }
++fn shutdown(pidfile: PidFile, code: std::process::ExitCode) -> std::process::ExitCode {
+     pidfile.release();
+     code
+ }
+@@ -673,7 +659,7 @@ fn load_config(userdata: &Path) -> anyhow::Result<Config> {
+ 
+     if !path.exists() {
+         let config = Config {
+-            name: "RG SP".to_string(),
++            name: "KNULLI RG35XX SP".to_string(),
+             webserver: moonshine_core::webserver::WebserverConfig {
+                 certificate: dir.join("cert.pem"),
+                 private_key: dir.join("key.pem"),
+@@ -684,7 +670,7 @@ fn load_config(userdata: &Path) -> anyhow::Result<Config> {
+             // handheld's screen, which is what the framebuffer capture
+             // streams.
+             applications: vec![moonshine_core::config::ApplicationConfig {
+-                title: "RG SP".to_string(),
++                title: "Tela do KNULLI".to_string(),
+                 ..Default::default()
+             }],
+             ..Default::default()
+diff --git a/rgsp-host/src/video.rs b/rgsp-host/src/video.rs
+index d8cf0a9..7ba0afc 100644
+--- a/rgsp-host/src/video.rs
++++ b/rgsp-host/src/video.rs
+@@ -15,9 +15,9 @@ const RTP_CLOCK_HZ: u64 = 90_000;
+ /// Ceiling for the encoder bitrate, regardless of what the client negotiates.
+ /// 6 Mbps is already generous for 720x480 content and keeps keyframes small
+ /// enough to survive the handheld's WiFi.
+-pub const BITRATE_CEILING: u32 = 6_000_000;
++pub const BITRATE_CEILING: u32 = 3_000_000;
+ 
+-pub const PANEL_WIDTH: u32 = 720;
++pub const PANEL_WIDTH: u32 = 640;
+ pub const PANEL_HEIGHT: u32 = 480;
+ 
+ pub fn rtp_timestamp_for(frame_number: u64, fps: u32) -> u32 {
+@@ -98,6 +98,39 @@ pub struct VideoStream {
+     reset: Arc<AtomicBool>,
+ }
+ 
++/// Disable radio power saving for the session and restore its previous state.
++struct WifiGuard(Option<String>);
++
++impl WifiGuard {
++    fn for_session() -> Self {
++        let Ok(interfaces) = std::fs::read_dir("/sys/class/net") else {return Self(None)};
++        for interface in interfaces.flatten() {
++            if !interface.path().join("wireless").exists()
++                && !interface.path().join("phy80211").exists() {continue;}
++            let name = interface.file_name().to_string_lossy().to_string();
++            let state = std::process::Command::new("iw")
++                .args(["dev", &name, "get", "power_save"]).output();
++            if let Ok(state) = state {
++                if String::from_utf8_lossy(&state.stdout).contains("Power save: on") {
++                    let changed = std::process::Command::new("iw")
++                        .args(["dev", &name, "set", "power_save", "off"]).output();
++                    if changed.is_ok_and(|result| result.status.success()) {return Self(Some(name));}
++                }
++            }
++        }
++        Self(None)
++    }
++}
++
++impl Drop for WifiGuard {
++    fn drop(&mut self) {
++        if let Some(name) = &self.0 {
++            let _ = std::process::Command::new("iw")
++                .args(["dev", name, "set", "power_save", "on"]).output();
++        }
++    }
++}
++
+ impl VideoStream {
+     pub fn new(cfg: VideoConfig) -> Self {
+         VideoStream {
+@@ -140,6 +173,7 @@ impl VideoStream {
+     /// The VE scales input->destination in hardware, so the capture stays at
+     /// panel geometry and the encoder emits the negotiated size.
+     pub fn run(self, mut send: impl FnMut(EncodedFrameRef<'_>) -> Result<()>) -> Result<()> {
++        let _wifi = WifiGuard::for_session();
+         // Moonlight asks for a bitrate sized to the resolution it negotiated -
+         // 20 Mbps at 1080p by default. The actual picture is a 720x480 panel
+         // upscaled, so there is no detail above roughly SD to spend those bits
+diff --git a/rgsp-host/tests/audio_capture.rs b/rgsp-host/tests/audio_capture.rs
+index e55a198..dae12c5 100644
+--- a/rgsp-host/tests/audio_capture.rs
++++ b/rgsp-host/tests/audio_capture.rs
+@@ -1,3 +1,4 @@
++#![cfg(feature = "legacy-alsa-tests")]
+ use rgsp_host::audio::{LoopbackCapture, CHANNELS, SAMPLE_RATE};
+ use std::sync::Mutex;
+ 

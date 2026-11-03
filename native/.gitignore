@@ -1,0 +1,13 @@
+/bin/
+vendor-libs/
+.firmware-cache/
+dist/
+target/
+librgspcast.a
+*.h264
+*.mp4
+*.log
+.DS_Store
+vendor/moonshine/moonshine-core/Cargo.lock
+docs/superpowers/
+.superpowers/

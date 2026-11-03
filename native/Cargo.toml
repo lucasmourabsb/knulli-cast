@@ -1,0 +1,3 @@
+[workspace]
+members = ["rgsp-cedar", "rgsp-host", "rgsp-ui", "vendor/moonshine/moonshine-core", "vendor/reth-ipc"]
+resolver = "2"
