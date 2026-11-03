@@ -51,14 +51,7 @@ O código-fonte fica neste repositório. Os executáveis `go2rtc` e `moonlight-h
 
 ## Como funciona
 
-```mermaid
-flowchart LR
-    R[RG35XX SP com KNULLI] -->|H.264 por hardware| V[Imagem]
-    R -->|Monitor do áudio| A[Som]
-    V --> B[Navegador ou Moonlight no receptor]
-    A --> B
-    C[Botões do portátil] --> R
-```
+**Botões do portátil → jogo no RG35XX SP → Wi-Fi → imagem e som no receptor.**
 
 O navegador usa vídeo WebRTC e áudio PCM estéreo com uma fila curta; Opus/WebRTC é a alternativa automática quando o áudio direto não funciona. O modo Moonlight usa o protocolo GameStream com captura adaptada ao KNULLI. Os jogos continuam rodando no portátil. Controle remoto pelos botões do receptor não foi implementado.
 
