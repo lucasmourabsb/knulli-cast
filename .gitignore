@@ -18,3 +18,4 @@ handheld/backup-*/
 vendor-libs/
 sysroot/
 dist/
+native/source/

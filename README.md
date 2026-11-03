@@ -47,7 +47,7 @@ O pareamento é feito uma vez por receptor. No teste com Mac, usamos **640 × 48
 - [Arquitetura, resultados e limitações](docs/TECNICO.md)
 - [Origem do código e licenças](NOTICE.md)
 
-O código-fonte fica neste repositório. Os executáveis `go2rtc` e `moonlight-host`, as bibliotecas proprietárias CedarC, ROMs, BIOS, certificados e registros de pareamento não ficam no Git. A pasta `native/` contém o código completo adaptado de rgsp-cast. As ferramentas de instalação do NextUI nessa pasta pertencem ao projeto original; **use as instruções KNULLI deste README**.
+O código do navegador fica em `handheld/`. A pasta `native/` fornece as [fontes completas do servidor Moonlight](native/rgsp-cast-knulli-source.tar.gz), com SHA-256, e um [patch das adaptações Rust](native/KNULLI.patch). O script `scripts/prepare_native.py` confere e extrai as fontes antes da compilação. Os executáveis `go2rtc` e `moonlight-host`, as bibliotecas proprietárias CedarC, ROMs, BIOS, certificados e registros de pareamento não ficam no Git. As ferramentas NextUI no arquivo de fontes pertencem ao projeto original; **use as instruções KNULLI deste README**.
 
 ## Como funciona
 
