@@ -207,10 +207,10 @@ index fc45517..efde869 100644
  [dev-dependencies]
  jsonrpsee = { version = "0.26.0", default-features = false, features = ["server", "macros", "async-client"] }
 diff --git a/rgsp-host/src/audio.rs b/rgsp-host/src/audio.rs
-index 1ac266b..250f132 100644
+index 1ac266b..792b75d 100644
 --- a/rgsp-host/src/audio.rs
 +++ b/rgsp-host/src/audio.rs
-@@ -1,186 +1,63 @@
+@@ -1,186 +1,66 @@
 -//! ALSA loopback capture for streaming game audio.
 -//!
 -//! # Known Gap: Loopback Data Path
@@ -352,12 +352,15 @@ index 1ac266b..250f132 100644
 -            );
 +    pub fn open(_device: &str) -> Result<Self> {
 +        let monitor = "alsa_output._sys_devices_platform_soc_soc_03000000_codec_mach_sound_card0.stereo-fallback.monitor";
++        let preferences = moonshine_core::stream_preferences::StreamPreferences::from_env();
++        let latency = preferences.audio_capture_ms.to_string();
++        let fragment = (preferences.audio_capture_ms * SAMPLE_RATE / 1000 * CHANNELS * 2).to_string();
 +        let mut command = Command::new("/usr/bin/ffmpeg");
 +        command.env("PULSE_RUNTIME_PATH", "/var/run/pulse")
-+            .env("PULSE_LATENCY_MSEC", "5")
++            .env("PULSE_LATENCY_MSEC", &latency)
 +            .args(["-hide_banner", "-loglevel", "warning", "-nostdin",
 +                "-probesize", "32", "-analyzeduration", "1", "-f", "pulse",
-+                "-fragment_size", "960", "-i", monitor,
++                "-fragment_size", &fragment, "-i", monitor,
 +                "-vn", "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
 +                "-f", "s16le", "-flush_packets", "1", "pipe:1"])
 +            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -443,7 +446,7 @@ index 1ac266b..250f132 100644
      }
  }
 diff --git a/rgsp-host/src/main.rs b/rgsp-host/src/main.rs
-index 9e25090..6bbd2bb 100644
+index 9e25090..7884545 100644
 --- a/rgsp-host/src/main.rs
 +++ b/rgsp-host/src/main.rs
 @@ -1,5 +1,5 @@
@@ -486,7 +489,18 @@ index 9e25090..6bbd2bb 100644
  
  /// The directory holding the pidfile and the control socket.
  fn run_dir() -> PathBuf {
-@@ -117,17 +116,7 @@ fn main() -> std::process::ExitCode {
+@@ -82,6 +81,10 @@ fn input_selftest() -> anyhow::Result<()> {
+ }
+ 
+ fn main() -> std::process::ExitCode {
++    if std::env::args().any(|a| a == "--print-stream-settings") {
++        println!("{}", serde_json::to_string(&moonshine_core::stream_preferences::StreamPreferences::from_env()).unwrap());
++        return std::process::ExitCode::SUCCESS;
++    }
+     tracing_subscriber::fmt()
+         .with_env_filter(
+             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+@@ -117,17 +120,7 @@ fn main() -> std::process::ExitCode {
          }
      };
  
@@ -505,7 +519,7 @@ index 9e25090..6bbd2bb 100644
  
      // Loaded before the runtime exists: it sets `XDG_DATA_HOME`, and mutating
      // the environment with other threads running is the pattern Rust 2024 made
-@@ -136,7 +125,7 @@ fn main() -> std::process::ExitCode {
+@@ -136,7 +129,7 @@ fn main() -> std::process::ExitCode {
          Ok(config) => config,
          Err(e) => {
              tracing::error!("{e:#}");
@@ -514,7 +528,7 @@ index 9e25090..6bbd2bb 100644
          }
      };
  
-@@ -144,7 +133,7 @@ fn main() -> std::process::ExitCode {
+@@ -144,7 +137,7 @@ fn main() -> std::process::ExitCode {
          Ok(rt) => rt,
          Err(e) => {
              tracing::error!("failed to start the tokio runtime: {e}");
@@ -523,7 +537,7 @@ index 9e25090..6bbd2bb 100644
          }
      };
  
-@@ -161,7 +150,7 @@ fn main() -> std::process::ExitCode {
+@@ -161,7 +154,7 @@ fn main() -> std::process::ExitCode {
          Ok(handle) => handle,
          Err(e) => {
              tracing::error!("failed to serve the control socket: {e:#}");
@@ -532,7 +546,7 @@ index 9e25090..6bbd2bb 100644
          }
      };
  
-@@ -190,16 +179,13 @@ fn main() -> std::process::ExitCode {
+@@ -190,16 +183,13 @@ fn main() -> std::process::ExitCode {
              std::process::ExitCode::FAILURE
          }
      };
@@ -551,7 +565,27 @@ index 9e25090..6bbd2bb 100644
      pidfile.release();
      code
  }
-@@ -673,7 +659,7 @@ fn load_config(userdata: &Path) -> anyhow::Result<Config> {
+@@ -417,7 +407,8 @@ async fn session_pump(
+         // session down. Clamp once, here, and use this one value everywhere
+         // below — the encoder's pacing and the 90 kHz RTP clock must never
+         // disagree.
+-        let fps = context.fps.max(1);
++        let preferences = moonshine_core::stream_preferences::StreamPreferences::from_env();
++        let fps = preferences.effective_fps(context.fps);
+         if fps != context.fps {
+             tracing::warn!("client negotiated {} fps; clamped to {fps}", context.fps);
+         }
+@@ -434,6 +425,9 @@ async fn session_pump(
+             context.bitrate,
+             context.video_format,
+         );
++        tracing::info!("stream preferences: video limit {} bps / {} fps, audio limit {} bps, capture {} ms, complexity {}",
++            preferences.video_bitrate_max, preferences.video_fps_max, preferences.audio_bitrate_max,
++            preferences.audio_capture_ms, preferences.audio_complexity);
+         // We only ever produce H.264: the Cedar VE's H.265 path is not wired
+         // up here. A client that negotiated anything else will sit in
+         // "Waiting for IDR frame" forever, because its depacketizer looks for
+@@ -673,7 +667,7 @@ fn load_config(userdata: &Path) -> anyhow::Result<Config> {
  
      if !path.exists() {
          let config = Config {
@@ -560,7 +594,7 @@ index 9e25090..6bbd2bb 100644
              webserver: moonshine_core::webserver::WebserverConfig {
                  certificate: dir.join("cert.pem"),
                  private_key: dir.join("key.pem"),
-@@ -684,7 +670,7 @@ fn load_config(userdata: &Path) -> anyhow::Result<Config> {
+@@ -684,7 +678,7 @@ fn load_config(userdata: &Path) -> anyhow::Result<Config> {
              // handheld's screen, which is what the framebuffer capture
              // streams.
              applications: vec![moonshine_core::config::ApplicationConfig {
@@ -570,7 +604,7 @@ index 9e25090..6bbd2bb 100644
              }],
              ..Default::default()
 diff --git a/rgsp-host/src/video.rs b/rgsp-host/src/video.rs
-index d8cf0a9..7ba0afc 100644
+index d8cf0a9..943cfc9 100644
 --- a/rgsp-host/src/video.rs
 +++ b/rgsp-host/src/video.rs
 @@ -15,9 +15,9 @@ const RTP_CLOCK_HZ: u64 = 90_000;
@@ -625,7 +659,7 @@ index d8cf0a9..7ba0afc 100644
  impl VideoStream {
      pub fn new(cfg: VideoConfig) -> Self {
          VideoStream {
-@@ -140,6 +173,7 @@ impl VideoStream {
+@@ -140,13 +173,15 @@ impl VideoStream {
      /// The VE scales input->destination in hardware, so the capture stays at
      /// panel geometry and the encoder emits the negotiated size.
      pub fn run(self, mut send: impl FnMut(EncodedFrameRef<'_>) -> Result<()>) -> Result<()> {
@@ -633,6 +667,15 @@ index d8cf0a9..7ba0afc 100644
          // Moonlight asks for a bitrate sized to the resolution it negotiated -
          // 20 Mbps at 1080p by default. The actual picture is a 720x480 panel
          // upscaled, so there is no detail above roughly SD to spend those bits
+         // on: all a higher ceiling buys is enormous keyframes that this
+         // device's WiFi then drops, which is what makes the stream freeze.
+         // Cap it at a rate generous for the real source resolution.
+-        let bitrate = self.cfg.bitrate.min(BITRATE_CEILING);
++        let bitrate = moonshine_core::stream_preferences::StreamPreferences::from_env()
++            .effective_video_bitrate(self.cfg.bitrate);
+         if bitrate != self.cfg.bitrate {
+             tracing::info!(
+                 "requested {} bps capped to {} bps for a {}x{} source",
 diff --git a/rgsp-host/tests/audio_capture.rs b/rgsp-host/tests/audio_capture.rs
 index e55a198..dae12c5 100644
 --- a/rgsp-host/tests/audio_capture.rs
@@ -642,3 +685,119 @@ index e55a198..dae12c5 100644
  use rgsp_host::audio::{LoopbackCapture, CHANNELS, SAMPLE_RATE};
  use std::sync::Mutex;
  
+diff --git a/vendor/moonshine/moonshine-core/src/lib.rs b/vendor/moonshine/moonshine-core/src/lib.rs
+index 59f85d9..295d1c8 100644
+--- a/vendor/moonshine/moonshine-core/src/lib.rs
++++ b/vendor/moonshine/moonshine-core/src/lib.rs
+@@ -7,6 +7,7 @@ pub mod crypto;
+ pub mod discovery;
+ pub mod rtsp;
+ pub mod session;
++pub mod stream_preferences;
+ pub(crate) mod state;
+ pub mod tls;
+ pub mod webserver;
+diff --git a/vendor/moonshine/moonshine-core/src/session/stream/audio/encoder.rs b/vendor/moonshine/moonshine-core/src/session/stream/audio/encoder.rs
+index 370ad10..8cf7d92 100644
+--- a/vendor/moonshine/moonshine-core/src/session/stream/audio/encoder.rs
++++ b/vendor/moonshine/moonshine-core/src/session/stream/audio/encoder.rs
+@@ -59,11 +59,13 @@ impl AudioEncoder {
+ 		.map_err(|e| tracing::warn!("Failed to create audio encoder: {e}"))?;
+ 
+ 		// Moonlight expects a constant bitrate.
++		let preferences = crate::stream_preferences::StreamPreferences::from_env();
++		let bitrate = stream_config.bitrate.min(preferences.audio_bitrate_max);
+ 		encoder
+ 			.set_vbr(false)
+ 			.map_err(|e| tracing::warn!("Failed to disable variable bitrate: {e}"))?;
+ 		encoder
+-			.set_bitrate(opus::Bitrate::Bits(stream_config.bitrate as i32))
++			.set_bitrate(opus::Bitrate::Bits(bitrate as i32))
+ 			.map_err(|e| tracing::warn!("Failed to set audio bitrate: {e}"))?;
+ 
+ 		// libopus defaults to complexity 10, its most expensive setting. That
+@@ -74,9 +76,10 @@ impl AudioEncoder {
+ 		// dropped silently, which is heard as constant crackle. Complexity 5
+ 		// is a large speedup for a difference that is inaudible at this
+ 		// bitrate on a handheld's game audio.
+-		if let Err(e) = encoder.set_complexity(5) {
++		if let Err(e) = encoder.set_complexity(preferences.audio_complexity as i32) {
+ 			tracing::warn!("Failed to set audio encoder complexity: {e}");
+ 		}
++		tracing::info!("audio encoder: {} bps, complexity {}", bitrate, preferences.audio_complexity);
+ 
+ 		let fec_encoder = ReedSolomon::new(NR_DATA_SHARDS, NR_PARITY_SHARDS)
+ 			.map_err(|e| tracing::warn!("Failed to create FEC encoder: {e}"))?;
+diff --git a/vendor/moonshine/moonshine-core/src/stream_preferences.rs b/vendor/moonshine/moonshine-core/src/stream_preferences.rs
+new file mode 100644
+index 0000000..466529e
+--- /dev/null
++++ b/vendor/moonshine/moonshine-core/src/stream_preferences.rs
+@@ -0,0 +1,67 @@
++//! Handheld-side limits. Resolution and channel layout remain client-negotiated.
++use serde::Serialize;
++
++#[derive(Debug, Clone, Copy, Serialize)]
++pub struct StreamPreferences {
++    pub video_bitrate_max: u32,
++    pub video_fps_max: u32,
++    pub audio_bitrate_max: u32,
++    pub audio_capture_ms: u32,
++    pub audio_complexity: u32,
++}
++
++impl StreamPreferences {
++    pub fn from_env() -> Self {
++        Self::read(|key| std::env::var(key).ok())
++    }
++
++    fn read(get: impl Fn(&str) -> Option<String>) -> Self {
++        let number = |key, min, max, fallback| {
++            get(key).and_then(|s| s.parse::<u32>().ok())
++                .filter(|n| *n >= min && *n <= max).unwrap_or(fallback)
++        };
++        Self {
++            video_bitrate_max: number("RGSP_VIDEO_BITRATE_MAX", 750_000, 6_000_000, 3_000_000),
++            video_fps_max: number("RGSP_VIDEO_FPS_MAX", 1, 60, 60),
++            // Preserve the former encoder defaults when no UI preferences are passed.
++            audio_bitrate_max: number("RGSP_AUDIO_BITRATE_MAX", 64_000, 512_000, 512_000),
++            audio_capture_ms: number("RGSP_AUDIO_CAPTURE_MS", 5, 20, 5),
++            audio_complexity: number("RGSP_AUDIO_COMPLEXITY", 1, 5, 5),
++        }
++    }
++
++    pub fn effective_fps(&self, requested: u32) -> u32 {
++        requested.max(1).min(self.video_fps_max)
++    }
++
++    pub fn effective_video_bitrate(&self, requested: u32) -> u32 {
++        requested.max(100_000).min(self.video_bitrate_max)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn invalid_preferences_fall_back_to_working_limits() {
++        let prefs = StreamPreferences::read(|_| Some("0".into()));
++        assert_eq!(prefs.video_bitrate_max, 3_000_000);
++        assert_eq!(prefs.audio_capture_ms, 5);
++        assert_eq!(prefs.video_fps_max, 60);
++    }
++
++    #[test]
++    fn sender_limits_honor_lower_client_requests() {
++        let prefs = StreamPreferences::read(|key| match key {
++            "RGSP_VIDEO_BITRATE_MAX" => Some("1500000".into()),
++            "RGSP_VIDEO_FPS_MAX" => Some("30".into()),
++            _ => None,
++        });
++        assert_eq!(prefs.effective_video_bitrate(10_000_000), 1_500_000);
++        assert_eq!(prefs.effective_video_bitrate(1_000_000), 1_000_000);
++        assert_eq!(prefs.effective_fps(60), 30);
++        assert_eq!(prefs.effective_fps(25), 25);
++        assert_eq!(prefs.effective_fps(0), 1);
++    }
++}
