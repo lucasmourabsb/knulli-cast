@@ -8,6 +8,7 @@ handheld/moonlight-host
 handheld/moonlight-state/
 handheld/rgsp-cast/
 handheld/backup-*/
+handheld/stream-settings.json
 *.pem
 *.key
 *.crt
