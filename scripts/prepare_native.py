@@ -7,7 +7,7 @@ import shutil
 import tarfile
 import tempfile
 
-SHA256 = 'e5ba76b7b1b5ed681b1edd4bdea6ba9c3772d4eb2794195ee737f9306acc47ad'
+SHA256 = 'd0df4b0266e9aca701f3acfe49789bd03a3f3c4a9713e91e26c92b5b0e1c3d0f'
 
 
 def prepare(destination=None):
