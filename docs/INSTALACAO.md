@@ -27,7 +27,7 @@ chmod +x /userdata/system/knulli-cast/moonlight-host
 python3 /userdata/system/knulli-cast/install-menu.py
 ```
 
-O instalador de menu reinicia o EmulationStation, preserva uma cópia do `gamelist.xml` e dos atalhos próprios anteriores e adiciona os três atalhos em **Ports**. Os executáveis de cada modo precisam ter sido preparados antes de usar o respectivo atalho. O script não instala firmware nem adiciona serviço à inicialização.
+O instalador de menu reinicia o EmulationStation, preserva uma cópia do `gamelist.xml` e dos atalhos próprios anteriores e adiciona os atalhos em **Ports**, incluindo **Moonlight - Ajustes**. Os executáveis de cada modo precisam ter sido preparados antes de usar o respectivo atalho. O script não instala firmware nem adiciona serviço à inicialização.
 
 ## Atualizar
 
