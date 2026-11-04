@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import stream_settings
 
 ROOT = Path(__file__).resolve().parent
 RUN = Path('/tmp/knulli-moonlight')
@@ -17,7 +18,8 @@ LOG = Path('/tmp/knulli-moonlight.log')
 def pid():
     try:
         value = int((RUN/'daemon.pid').read_text())
-        if Path(f'/proc/{value}/exe').resolve() == ROOT/'moonlight-host':
+        executable = os.readlink(f'/proc/{value}/exe').removesuffix(' (deleted)')
+        if executable == str(ROOT/'moonlight-host'):
             return value
     except (OSError, ValueError):
         pass
@@ -79,6 +81,8 @@ def start(keep_web=False):
     env = os.environ.copy()
     env.update({'LD_LIBRARY_PATH':str(ROOT/'lib'), 'RGSP_USERDATA':str(ROOT),
                 'RGSP_RUN_DIR':str(RUN), 'XDG_DATA_HOME':str(ROOT/'moonlight-state')})
+    preferences = stream_settings.load()
+    env.update(stream_settings.environment(preferences))
     with LOG.open('ab') as log:
         child = subprocess.Popen([str(ROOT/'moonlight-host')], env=env,
                                  stdin=subprocess.DEVNULL, stdout=log,
@@ -88,6 +92,7 @@ def start(keep_web=False):
             raise RuntimeError('Não foi possível iniciar o Moonlight. Consulte '+str(LOG))
         try:
             status()
+            (RUN/'settings.sha256').write_text(stream_settings.fingerprint(preferences))
             return
         except (OSError, ValueError):
             time.sleep(.1)
@@ -104,6 +109,27 @@ def stop():
             return
         time.sleep(.1)
     raise RuntimeError('O Moonlight ainda está encerrando a transmissão.')
+
+
+def apply_settings(value):
+    """Save transactionally and restart only the Moonlight service if active."""
+    value = stream_settings.validate(value)
+    previous = stream_settings.load()
+    running = pid() is not None
+    stream_settings.save(value)
+    try:
+        if running:
+            stop()
+            start()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        stream_settings.save(previous)
+        try:
+            if running and not pid():
+                start()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            pass
+        raise RuntimeError('Não foi possível aplicar. Os ajustes anteriores foram restaurados.') from error
+    return running
 
 
 if __name__ == '__main__':
