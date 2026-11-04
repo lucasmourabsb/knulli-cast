@@ -31,6 +31,14 @@ Siga os mesmos passos do computador. Digite o endereço completo na barra do nav
 
 Para Mac, a configuração testada foi 640 × 480, 60 FPS, 3 Mbps e H.264. Para Android/TV, comece pela resolução oferecida mais próxima, como 720p/60, e teste. Os nomes dos botões variam entre versões do Moonlight.
 
+## Qualidade no próprio RG35XX SP
+
+Para o modo Moonlight, abra **Ports → Moonlight - Ajustes**. Cima/baixo escolhem a opção; esquerda/direita alteram. A também percorre as opções. Termine em **Salvar e aplicar**. Se o transmissor estiver ligado, confirme a reinicialização e reconecte o Moonlight do receptor.
+
+Comece com **Equilibrado**. Para priorizar menos dados e processamento, teste **Mais rápido**; se a rede estiver instável, teste **Rede fraca**. **Mais qualidade** usa menos compressão, exigindo uma conexão melhor. Os limites e valores de cada perfil estão no [README](../README.md#ajustar-a-transmissão-no-próprio-portátil).
+
+O número em ms representa o buffer solicitado para a captura do som. Ele não mede o atraso total até o alto-falante. A resolução continua nas configurações do Moonlight do receptor; um limite menor definido no receptor também prevalece sobre o do portátil.
+
 ## TV ou projetor
 
 **Com Android e loja de aplicativos:** instale Moonlight, se estiver disponível para o aparelho, e siga o pareamento acima. Um navegador com suporte suficiente também pode abrir o modo navegador.

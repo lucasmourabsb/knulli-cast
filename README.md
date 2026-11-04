@@ -2,7 +2,7 @@
 
 Transmita a tela e o som do **Anbernic RG35XX SP com KNULLI Scarab** para outro aparelho na rede local e continue jogando com os botões do portátil.
 
-**Protótipo experimental.** Verificado no RG35XX SP com Scarab de 11/05/2026 e um Mac. Android, Android TV, Windows, Linux e outros portáteis ainda precisam de validação com este servidor.
+**Protótipo experimental.** Verificado no RG35XX SP com Scarab de 11/05/2026 e um Mac. Pareamento e imagem também foram confirmados em um projetor Android. A latência total não foi medida; outros receptores e portáteis ainda precisam de validação.
 
 ## Usar em um portátil que já tem o projeto instalado
 
@@ -27,6 +27,23 @@ O receptor precisa de um navegador compatível com WebRTC/H.264 e reprodução d
 O pareamento é feito uma vez por receptor. No teste com Mac, usamos **640 × 480, 60 FPS, H.264 e 3 Mbps**. Em Android/TV que não ofereça 640 × 480, 720p/60 é uma configuração inicial para testar, sem garantia de desempenho.
 
 **Use um modo de cada vez.** Iniciar Moonlight encerra o modo navegador; iniciar navegador encerra o servidor Moonlight.
+
+## Ajustar a transmissão no próprio portátil
+
+Abra **Ports → Moonlight - Ajustes**. Use cima/baixo para escolher uma opção e esquerda/direita para alterar. Em **Salvar e aplicar**, confirme com A. Se o transmissor estiver ligado, ele será reiniciado e será preciso reconectar o Moonlight no receptor. Os pareamentos e os jogos são preservados.
+
+![Ajustes de transmissão no próprio portátil](docs/stream-settings.png)
+
+| Perfil | Imagem, até | Fluidez, até | Som, até | Buffer solicitado |
+| --- | --- | --- | --- | --- |
+| Mais rápido | 1,5 Mbps | 60 FPS | 64 kbps | 5 ms |
+| Equilibrado | 3 Mbps | 60 FPS | 96 kbps | 5 ms |
+| Mais qualidade | 5 Mbps | 60 FPS | 192 kbps | 5 ms |
+| Rede fraca | 1 Mbps | 30 FPS | 64 kbps | 10 ms |
+
+Imagem, fluidez, qualidade do som e buffer também podem ser ajustados separadamente. Esses valores são limites do transmissor; valores menores pedidos pelo receptor continuam sendo respeitados. A resolução continua sendo escolhida no Moonlight do receptor. Mais bitrate reduz a compressão, sem criar detalhes além da tela original.
+
+O buffer em milissegundos é um ajuste da captura do áudio, não uma medição do atraso total. Atraso e estabilidade também dependem da rede e do receptor. Os ajustes se aplicam ao modo **Moonlight** e ficam salvos no cartão; o modo navegador mantém sua configuração própria.
 
 ## Qual caminho usar
 

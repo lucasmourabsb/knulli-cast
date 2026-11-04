@@ -37,6 +37,7 @@ Os 39 testes dessa biblioteca passaram durante o desenvolvimento. Os testes que 
 
 ```sh
 python3 -m compileall -q handheld scripts tools
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 node tests/audio-queue.cjs
 ```
 
@@ -52,3 +53,17 @@ XDG_DATA_HOME=/userdata/system/knulli-cast/moonlight-state
 ```
 
 Não copie as chaves e os pareamentos de um aparelho para o repositório.
+
+## Limites de transmissão
+
+`moonlightctl.py` lê `handheld/stream-settings.json` no aparelho e exporta os limites escolhidos na tela **Moonlight - Ajustes**:
+
+```text
+RGSP_VIDEO_BITRATE_MAX   bits por segundo, de 750000 a 6000000
+RGSP_VIDEO_FPS_MAX       limite de quadros por segundo
+RGSP_AUDIO_BITRATE_MAX   limite Opus em bits por segundo
+RGSP_AUDIO_CAPTURE_MS    buffer solicitado ao monitor de áudio
+RGSP_AUDIO_COMPLEXITY    complexidade Opus de 1 a 5
+```
+
+Os valores são validados antes de salvar. O host aplica o menor limite entre a preferência local e o pedido do receptor. A resolução, o formato H.264 e a configuração de canais continuam sujeitos à negociação do Moonlight. `moonlight-host --print-stream-settings` permite conferir os limites carregados sem abrir os recursos de captura.

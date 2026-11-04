@@ -26,11 +26,17 @@ Referências: [Web Audio](https://www.w3.org/TR/webaudio-1.0/), [captura PulseAu
 - No teste subjetivo com os alto-falantes do computador, o atraso em relação ao áudio do portátil foi relatado como bem menor após o ajuste.
 - Verificações do PCM cobrem sinal e canais, blocos partidos, limite da fila, silêncio durante falta de amostras e recuperação. O serviço foi verificado para origem, formato, limite de ouvintes e encerramento.
 
+## Ajustes no portátil
+
+**Moonlight - Ajustes** controla limites de bitrate de vídeo, FPS e bitrate Opus, além do buffer de captura do áudio e da complexidade Opus associada aos perfis. O arquivo `stream-settings.json` é validado e gravado por substituição atômica. Aplicar uma configuração reinicia somente o transmissor Moonlight, preservando os pares. Uma falha ao reiniciar restaura a configuração anterior.
+
+Na verificação desta versão, passaram 10 testes Python de mapeamento, preferências e recuperação e 2 testes nativos dos limites. Os quatro perfis tiveram os valores conferidos no executável ARM64 no portátil. Transmissões com imagem recebida no Mac confirmaram **Rede fraca: 30 FPS, 1 Mbps e áudio 64 kbps** e **Mais rápido: 60 FPS, 1,5 Mbps e áudio 64 kbps**. O usuário confirmou a nova tela no portátil. Esses testes não medem a latência total até o receptor.
+
 ## Limites
 
 A latência total de áudio até os alto-falantes e a latência total de comandos até a imagem no Moonlight não foram medidas. Tempos de rede, decodificação, fila de áudio e saída do sistema são parcelas distintas.
 
-Android/TV, Windows/Linux, outros roteadores e outras versões do KNULLI ainda precisam de teste. O mapeamento dos botões da tela pygame de pareamento precisa de validação adicional no aparelho. O pareamento do Mac foi confirmado por controle local durante o desenvolvimento.
+Pareamento e imagem em projetor Android foram confirmados pelo usuário. A tela pygame agora lê A/B/Start do mapeamento do KNULLI, com reconhecimento de controles conectados depois da abertura, e desenha as setas do rodapé sem depender dos glifos da fonte. O usuário confirmou o pareamento pelo botão A após essa correção. Windows/Linux, outros roteadores e outras versões do KNULLI ainda precisam de teste.
 
 Não há suporte implementado para controle remoto pelos botões do receptor. O jogador usa os botões do RG35XX SP.
 

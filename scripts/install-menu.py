@@ -10,6 +10,8 @@ gamelist = ports/'gamelist.xml'
 if subprocess.check_output(['/usr/bin/knulli-es-swissknife','--emupid'],text=True).strip() != '0':
     raise SystemExit('Um jogo está aberto. Os atalhos aguardam a atualização do menu.')
 entries = [
+    ('Ajustes-Moonlight.sh','Ajustes de transmissao - Moonlight.sh','Moonlight - Ajustes',
+     'Ajuste a qualidade da imagem, fluidez e som da transmissão. Escolha Mais rápido, Equilibrado, Mais qualidade ou Rede fraca e salve. Após aplicar, reconecte o Moonlight no receptor.'),
     ('Transmitir-Moonlight.sh','Transmitir tela - Moonlight.sh','Moonlight - Transmitir tela',
      'Envia a imagem e o som do RG35XX SP para o Moonlight no computador, Android ou televisão. Use o direcional e A para digitar o PIN. Ao iniciar a transmissão, o menu volta automaticamente para você escolher um jogo.'),
     ('Transmitir-Navegador.sh','Transmitir tela - navegador.sh','Navegador - Transmitir tela',
